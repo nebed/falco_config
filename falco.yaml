@@ -1,0 +1,49 @@
+falco:
+  jsonOutput: true
+  jsonIncludeOutputProperty: true
+
+  programOutput:
+    enabled: true
+    program: "jq '{\"channel\":\"alerts-falco\", \"text\": .output}' | curl -i -X POST -H 'Content-Type: application/json' -d @- https://xo.chat.crossover.com/hooks/WEBHOOK_KEY"
+  syscallEventDrops:
+    actions: [log]
+
+customRules:
+  falco_rules.local.yaml: |-
+    
+    - list: trusted_images
+      items: [
+        docker.elastic.co/beats/filebeat, prom/node-exporter, 
+        mcr.microsoft.com/containernetworking/networkmonitor, deis/hcp-tunnel-front, 
+        falcosecurity/falco, mcr.microsoft.com/oss/kubernetes/hyperkube,
+        mcr.microsoft.com/containernetworking/networkmonitor, mcr.microsoft.com/oss/kubernetes/ip-masq-agent 
+        ]
+    
+    - macro: trusted_containers
+      condition: (container.image.repository in (trusted_images))
+    
+    - macro: falco_privileged_containers
+      condition: (openshift_image or
+                  user_trusted_containers or
+                  container.image.repository in (trusted_images) or
+                  container.image.repository in (falco_privileged_images) or
+                  container.image.repository startswith istio/proxy_ or
+                  container.image.repository startswith quay.io/sysdig)
+    
+    - list: k8s_client_binaries
+      items: [docker, kubectl, crictl]
+    
+    - list: allowed_repositories
+      items: ["k8s.gcr.io/fluentd-gcp-scaler", "deis/hcp-tunnel-front"]
+    
+    # Whitelist for known docker client binaries run inside container
+    # - k8s.gcr.io/fluentd-gcp-scaler in GCP/GKE 
+    - macro: user_known_k8s_client_container
+      condition: (k8s.ns.name="kube-system" and container.image.repository in (allowed_repositories))
+      
+    - rule: The docker client is executed in a container
+      desc: Detect a k8s client tool executed inside a container
+      condition: spawned_process and container and not user_known_k8s_client_container and proc.name in (k8s_client_binaries)
+      output: "Docker or kubernetes client executed in container (user=%user.name %container.info parent=%proc.pname cmdline=%proc.cmdline image=%container.image.repository:%container.image.tag)"
+      priority: WARNING
+      tags: [container, mitre_execution]
